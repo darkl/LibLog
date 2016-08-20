@@ -1205,19 +1205,11 @@ namespace YourRootNamespace.Logging.LogProviders
                 ParameterExpression messageParam = Expression.Parameter(typeof(string));
                 ParameterExpression exceptionParam = Expression.Parameter(typeof(Exception));
 
-                PropertyInfo repositoryProperty = loggingEventType.GetProperty("Repository");
-                PropertyInfo levelProperty = loggingEventType.GetProperty("Level");
+                PropertyInfo repositoryProperty = loggingEventType.GetPropertyPortable("Repository");
+                PropertyInfo levelProperty = loggingEventType.GetPropertyPortable("Level");
 
                 ConstructorInfo loggingEventConstructor =
-                    loggingEventType.GetConstructor(new Type[]
-                                                    {
-                                                        typeof(Type),
-                                                        repositoryProperty.PropertyType,
-                                                        typeof(string),
-                                                        levelProperty.PropertyType,
-                                                        typeof(object),
-                                                        typeof(Exception)
-                                                    });
+                    loggingEventType.GetConstructorPortable(typeof(Type), repositoryProperty.PropertyType, typeof(string), levelProperty.PropertyType, typeof(object), typeof(Exception));
 
                 //Func<object, object, string, Exception, object> Log =
                 //(logger, callerStackBoundaryDeclaringType, level, message, exception) => new LoggingEvent(callerStackBoundaryDeclaringType, ((ILogger)logger).Repository, ((ILogger)logger).Name, (Level)level, message, exception); }
@@ -2058,6 +2050,19 @@ namespace YourRootNamespace.Logging.LogProviders
 
     internal static class TypeExtensions
     {
+        internal static ConstructorInfo GetConstructorPortable(this Type type, params Type[] types)
+        {
+#if LIBLOG_PORTABLE
+            return type.GetTypeInfo().DeclaredConstructors.FirstOrDefault
+                       (constructor =>
+                            constructor.GetParameters()
+                                       .Select(parameter => parameter.ParameterType)
+                                       .SequenceEqual(types));
+#else
+            return type.GetConstructor(types);
+#endif
+        }
+
         internal static MethodInfo GetMethodPortable(this Type type, string name)
         {
 #if LIBLOG_PORTABLE
