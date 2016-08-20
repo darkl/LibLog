@@ -1205,8 +1205,19 @@ namespace YourRootNamespace.Logging.LogProviders
                 ParameterExpression messageParam = Expression.Parameter(typeof(string));
                 ParameterExpression exceptionParam = Expression.Parameter(typeof(Exception));
 
+                PropertyInfo repositoryProperty = loggingEventType.GetProperty("Repository");
+                PropertyInfo levelProperty = loggingEventType.GetProperty("Level");
+
                 ConstructorInfo loggingEventConstructor =
-                    loggingEventType.GetConstructors().FirstOrDefault(x => x.GetParameters().Length == 6);
+                    loggingEventType.GetConstructor(new Type[]
+                                                    {
+                                                        typeof(Type),
+                                                        repositoryProperty.PropertyType,
+                                                        typeof(string),
+                                                        levelProperty.PropertyType,
+                                                        typeof(object),
+                                                        typeof(Exception)
+                                                    });
 
                 //Func<object, object, string, Exception, object> Log =
                 //(logger, callerStackBoundaryDeclaringType, level, message, exception) => new LoggingEvent(callerStackBoundaryDeclaringType, ((ILogger)logger).Repository, ((ILogger)logger).Name, (Level)level, message, exception); }
