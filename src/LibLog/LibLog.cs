@@ -1178,7 +1178,6 @@ namespace YourRootNamespace.Logging.LogProviders
                 //Action<object, object, string, Exception> Log =
                 //(logger, callerStackBoundaryDeclaringType, level, message, exception) => { ((ILogger)logger).Log(new LoggingEvent(callerStackBoundaryDeclaringType, logger.Repository, logger.Name, level, message, exception)); }
                 MethodInfo writeExceptionMethodInfo = loggerType.GetMethodPortable("Log",
-                                                                                   Type.GetType("log4net."),
                                                                                    loggingEventType);
 
                 ParameterExpression loggingEventParameter =
