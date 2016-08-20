@@ -1129,7 +1129,9 @@ namespace YourRootNamespace.Logging.LogProviders
             private readonly object _levelError;
             private readonly object _levelFatal;
             private readonly Func<object, object, bool> _isEnabledForDelegate;
-            private readonly Action<object, Type, object, string, Exception> _logDelegate;
+            private readonly Action<object, object> _logDelegate;
+            private readonly Func<object, Type, object, string, Exception, object> _createLoggingEvent;
+            private Action<object, string, object> _loggingEventPropertySetter;
 
             [SuppressMessage("Microsoft.Naming", "CA2204:Literals should be spelled correctly", MessageId = "ILogger")]
             internal Log4NetLogger(dynamic logger)
@@ -1155,38 +1157,121 @@ namespace YourRootNamespace.Logging.LogProviders
                 {
                     throw new InvalidOperationException("Type log4net.Core.ILogger, was not found.");
                 }
-                MethodInfo isEnabledMethodInfo = loggerType.GetMethodPortable("IsEnabledFor", logEventLevelType);
                 ParameterExpression instanceParam = Expression.Parameter(typeof(object));
                 UnaryExpression instanceCast = Expression.Convert(instanceParam, loggerType);
-                ParameterExpression callerStackBoundaryDeclaringTypeParam = Expression.Parameter(typeof(Type));
                 ParameterExpression levelParam = Expression.Parameter(typeof(object));
-                ParameterExpression messageParam = Expression.Parameter(typeof(string));
                 UnaryExpression levelCast = Expression.Convert(levelParam, logEventLevelType);
-                MethodCallExpression isEnabledMethodCall = Expression.Call(instanceCast, isEnabledMethodInfo, levelCast);
-                _isEnabledForDelegate = Expression.Lambda<Func<object, object, bool>>(isEnabledMethodCall, instanceParam, levelParam).Compile();
+                _isEnabledForDelegate = GetIsEnabledFor(loggerType, logEventLevelType, instanceCast, levelCast, instanceParam, levelParam);
 
-                // Action<object, object, string, Exception> Log =
-                // (logger, callerStackBoundaryDeclaringType, level, message, exception) => { ((ILogger)logger).Write(callerStackBoundaryDeclaringType, level, message, exception); }
+                Type loggingEventType = Type.GetType("log4net.Core.LoggingEvent, log4net");
+
+                _createLoggingEvent = GetCreateLoggingEvent(instanceParam, instanceCast, levelParam, levelCast, loggingEventType);
+
+                _logDelegate = GetLogDelegate(loggerType, loggingEventType, instanceCast, instanceParam);
+
+                _loggingEventPropertySetter = GetLoggingEventPropertySetter(loggingEventType);
+            }
+
+            private static Action<object, object> GetLogDelegate(Type loggerType, Type loggingEventType, UnaryExpression instanceCast,
+                                                 ParameterExpression instanceParam)
+            {
+                //Action<object, object, string, Exception> Log =
+                //(logger, callerStackBoundaryDeclaringType, level, message, exception) => { ((ILogger)logger).Log(new LoggingEvent(callerStackBoundaryDeclaringType, logger.Repository, logger.Name, level, message, exception)); }
                 MethodInfo writeExceptionMethodInfo = loggerType.GetMethodPortable("Log",
-                    typeof(Type),
-                    logEventLevelType,
-                    typeof(string),
-                    typeof(Exception));
-                ParameterExpression exceptionParam = Expression.Parameter(typeof(Exception));
+                                                                                   Type.GetType("log4net."),
+                                                                                   loggingEventType);
+
+                ParameterExpression loggingEventParameter =
+                    Expression.Parameter(typeof(object), "loggingEvent");
+
+                UnaryExpression loggingEventCasted =
+                    Expression.Convert(loggingEventParameter, loggingEventType);
+
                 var writeMethodExp = Expression.Call(
                     instanceCast,
                     writeExceptionMethodInfo,
-                    callerStackBoundaryDeclaringTypeParam,
-                    levelCast,
-                    messageParam,
-                    exceptionParam);
-                _logDelegate = Expression.Lambda<Action<object, Type, object, string, Exception>>(
-                    writeMethodExp,
-                    instanceParam,
-                    callerStackBoundaryDeclaringTypeParam,
-                    levelParam,
-                    messageParam,
-                    exceptionParam).Compile();
+                    loggingEventCasted);
+
+                var logDelegate = Expression.Lambda<Action<object, object>>(
+                                                writeMethodExp,
+                                                instanceParam,
+                                                loggingEventParameter).Compile();
+
+                return logDelegate;
+            }
+
+            private static Func<object, Type, object, string, Exception, object> GetCreateLoggingEvent(ParameterExpression instanceParam, UnaryExpression instanceCast, ParameterExpression levelParam, UnaryExpression levelCast, Type loggingEventType)
+            {
+                ParameterExpression callerStackBoundaryDeclaringTypeParam = Expression.Parameter(typeof(Type));
+                ParameterExpression messageParam = Expression.Parameter(typeof(string));
+                ParameterExpression exceptionParam = Expression.Parameter(typeof(Exception));
+
+                ConstructorInfo loggingEventConstructor =
+                    loggingEventType.GetConstructors().FirstOrDefault(x => x.GetParameters().Length == 6);
+
+                //Func<object, object, string, Exception, object> Log =
+                //(logger, callerStackBoundaryDeclaringType, level, message, exception) => new LoggingEvent(callerStackBoundaryDeclaringType, ((ILogger)logger).Repository, ((ILogger)logger).Name, (Level)level, message, exception); }
+                NewExpression newLoggingEventExpression =
+                    Expression.New(loggingEventConstructor,
+                                   callerStackBoundaryDeclaringTypeParam,
+                                   Expression.Property(instanceCast, "Repository"),
+                                   Expression.Property(instanceCast, "Name"),
+                                   levelCast,
+                                   messageParam,
+                                   exceptionParam);
+
+                var createLoggingEvent =
+                    Expression.Lambda<Func<object, Type, object, string, Exception, object>>(
+                                  newLoggingEventExpression,
+                                  instanceParam,
+                                  callerStackBoundaryDeclaringTypeParam,
+                                  levelParam,
+                                  messageParam,
+                                  exceptionParam)
+                              .Compile();
+
+                return createLoggingEvent;
+            }
+
+            private static Func<object, object, bool> GetIsEnabledFor(Type loggerType, Type logEventLevelType,
+                                                                      UnaryExpression instanceCast,
+                                                                      UnaryExpression levelCast,
+                                                                      ParameterExpression instanceParam,
+                                                                      ParameterExpression levelParam)
+            {
+                MethodInfo isEnabledMethodInfo = loggerType.GetMethodPortable("IsEnabledFor", logEventLevelType);
+                MethodCallExpression isEnabledMethodCall = Expression.Call(instanceCast, isEnabledMethodInfo, levelCast);
+
+                Func<object, object, bool> result =
+                    Expression.Lambda<Func<object, object, bool>>(isEnabledMethodCall, instanceParam, levelParam)
+                              .Compile();
+
+                return result;
+            }
+
+            private static Action<object, string, object> GetLoggingEventPropertySetter(Type loggingEventType)
+            {
+                ParameterExpression loggingEventParameter = Expression.Parameter(typeof(object), "loggingEvent");
+                ParameterExpression keyParameter = Expression.Parameter(typeof(string), "key");
+                ParameterExpression valueParameter = Expression.Parameter(typeof(object), "value");
+
+                PropertyInfo propertiesProperty = loggingEventType.GetPropertyPortable("Properties");
+                PropertyInfo item = propertiesProperty.PropertyType.GetPropertyPortable("Item");
+
+                // ((LoggingEvent)loggingEvent).Properties[key] = value;
+                var body =
+                    Expression.Assign(
+                        Expression.Property(
+                            Expression.Property(Expression.Convert(loggingEventParameter, loggingEventType),
+                                                propertiesProperty), item, keyParameter), valueParameter);
+
+                Action<object, string, object> result =
+                    Expression.Lambda<Action<object, string, object>>
+                              (body, loggingEventParameter, keyParameter,
+                               valueParameter)
+                              .Compile();
+
+                return result;
             }
 
             public bool Log(LogLevel logLevel, Func<string> messageFunc, Exception exception, params object[] formatParameters)
@@ -1201,7 +1286,14 @@ namespace YourRootNamespace.Logging.LogProviders
                     return false;
                 }
 
-                messageFunc = LogMessageFormatter.SimulateStructuredLogging(messageFunc, formatParameters);
+                string message = messageFunc();
+
+                IEnumerable<string> patternMatches;
+
+                string formattedMessage =
+                    LogMessageFormatter.FormatStructuredMessage(message,
+                                                                formatParameters,
+                                                                out patternMatches);
 
                 // determine correct caller - this might change due to jit optimizations with method inlining
                 if (s_callerStackBoundaryType == null)
@@ -1227,8 +1319,26 @@ namespace YourRootNamespace.Logging.LogProviders
                 }
 
                 var translatedLevel = TranslateLevel(logLevel);
-                _logDelegate(_logger, s_callerStackBoundaryType, translatedLevel, messageFunc(), exception);
+
+                object loggingEvent = _createLoggingEvent(_logger, s_callerStackBoundaryType, translatedLevel, formattedMessage, exception);
+
+                PopulateProperties(loggingEvent, patternMatches, formatParameters);
+
+                _logDelegate(_logger, loggingEvent);
+
                 return true;
+            }
+
+            private void PopulateProperties(object loggingEvent, IEnumerable<string> patternMatches, object[] formatParameters)
+            {
+                IEnumerable<KeyValuePair<string, object>> keyToValue =
+                    patternMatches.Zip(formatParameters,
+                                       (key, value) => new KeyValuePair<string, object>(key, value));
+
+                foreach (KeyValuePair<string, object> keyValuePair in keyToValue)
+                {
+                    _loggingEventPropertySetter(loggingEvent, keyValuePair.Key, keyValuePair.Value);
+                }
             }
 
             private static bool IsInTypeHierarchy(Type currentType, Type checkType)
@@ -1870,26 +1980,59 @@ namespace YourRootNamespace.Logging.LogProviders
 
             return () =>
             {
-                string targetMessage = messageBuilder();
-                int argumentIndex = 0;
-                foreach (Match match in Pattern.Matches(targetMessage))
-                {
-                    int notUsed;
-                    if (!int.TryParse(match.Value.Substring(1, match.Value.Length -2), out notUsed))
-                    {
-                        targetMessage = ReplaceFirst(targetMessage, match.Value,
-                            "{" + argumentIndex++ + "}");
-                    }
-                }
-                try
-                {
-                    return string.Format(CultureInfo.InvariantCulture, targetMessage, formatParameters);
-                }
-                catch (FormatException ex)
-                {
-                    throw new FormatException("The input string '" + targetMessage + "' could not be formatted using string.Format", ex);
-                }
+                return FormatStructuredMessage(messageBuilder(), formatParameters);
             };
+        }
+
+        public static string FormatStructuredMessage(string message, object[] formatParameters)
+        {
+            IEnumerable<string> patternMatches;
+            return FormatStructuredMessage(message, formatParameters, out patternMatches);
+        }
+
+        public static string FormatStructuredMessage(string message, object[] formatParameters, out IEnumerable<string> patternMatches)
+        {
+            if (formatParameters.Length == 0)
+            {
+                patternMatches = Enumerable.Empty<string>();
+                return message;
+            }
+
+            int argumentIndex = 0;
+
+            patternMatches = GetPatternMatches(message).ToList();
+
+            foreach (string match in patternMatches)
+            {
+                message = ReplaceFirst(message,
+                                       "{" + match + "}",
+                                       "{" + argumentIndex++ + "}");
+            }
+
+            try
+            {
+                return string.Format(CultureInfo.InvariantCulture, message, formatParameters);
+            }
+            catch (FormatException ex)
+            {
+                throw new FormatException(
+                    "The input string '" + message + "' could not be formatted using string.Format", ex);
+            }
+        }
+
+        private static IEnumerable<string> GetPatternMatches(string targetMessage)
+        {
+            foreach (Match match in Pattern.Matches(targetMessage))
+            {
+                string propertyName = match.Value.Substring(1, match.Value.Length - 2);
+
+                int notUsed;
+
+                if (!int.TryParse(propertyName, out notUsed))
+                {
+                    yield return propertyName;
+                }
+            }
         }
 
         private static string ReplaceFirst(string text, string search, string replace)
